@@ -1,0 +1,13 @@
+bin/
+obj/
+build.ninja
+__pycache__
+*.swp
+*.swo
+*.pyc
+*.suo
+*.filters
+*.user
+*.sdf
+*.opensdf
+dist/
