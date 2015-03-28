@@ -42,10 +42,9 @@ linker = args.cxx if args.cxx else tools.linker()
 
 # --- variables
 
-dependencies = ['catch', 'wheels']
+dependencies = []
 include_flags = flags([tools.include('include')],
-                      (tools.dependency_include(os.path.join('deps', d, 'include')) for d in dependencies),
-                      [tools.dependency_include('deps/cpptemplate')])
+                      (tools.dependency_include(os.path.join('deps', d, 'include')) for d in dependencies))
 if(args.boost_dir):
     include_flags += ' ' + tools.dependency_include(args.boost_dir)
 cxx_flags = flags(tools.cxx_flags(),
