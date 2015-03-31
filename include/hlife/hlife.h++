@@ -29,17 +29,17 @@ namespace hlife {
     using cell_ref = cell const&;
 
     union cell {
+    private:
+        // Passkey for ctors
+        struct key {};
+
     public:
-        // The one live cell
-        static cell_ref live_leaf() {
-            static cell live = cell(true);
-            return live;
-        }
-        // The one dead cell
-        static cell_ref dead_leaf() {
-            static cell dead = cell(true);
-            return dead;
-        }
+        // Except for the two leaves, ctors should only be used by cellspace to
+        // generate cells uniquely and as needed. The passkey idiom is used to
+        // help that.
+        cell(key const&, bool status) : alive(status) {}
+        cell(key const&, cell_ref nw, cell_ref ne, cell_ref sw, cell_ref se)
+        : q{ &nw, &ne, &sw, &se, nullptr } {}
 
     private:
         friend struct cellspace;
@@ -49,6 +49,10 @@ namespace hlife {
         // We simply assume that all cells exist in cellspace
         // and none needs to be created through the ctors.
         static cell_ref get_cell(cellspace& space, cell_ref nw, cell_ref ne, cell_ref sw, cell_ref se);
+
+        // Live and dead leaf cells from the cellspace.
+        static cell_ref live(cellspace& space);
+        static cell_ref dead(cellspace& space);
 
         // Evaluates this cell, effectively computing the future of this cell's
         // quadrants. This result is a cell one size smaller as the rest of the
@@ -76,10 +80,10 @@ namespace hlife {
                         + *q.sw->q.ne               + *q.se->q.ne
                         + *q.sw->q.se + *q.se->q.sw + *q.se->q.se;
                 q.future = &get_cell(space,
-                        future_leaf(nnw, *q.nw->q.se),
-                        future_leaf(nne, *q.ne->q.sw),
-                        future_leaf(nsw, *q.sw->q.ne),
-                        future_leaf(nse, *q.se->q.nw));
+                        future_leaf(space, nnw, *q.nw->q.se),
+                        future_leaf(space, nne, *q.ne->q.sw),
+                        future_leaf(space, nsw, *q.sw->q.ne),
+                        future_leaf(space, nse, *q.se->q.nw));
             } else {
                 // n-cells are evaluated by combining the results of nine n-2-cells...
                 cell_ref inw = q.nw->result(space, level-1);
@@ -111,34 +115,34 @@ namespace hlife {
         // Evaluates the pseudo-quadrant that straddles the four quadrants in
         // the center.
         cell_ref result_center(cellspace& space, int level) const {
-            return get_cell(space, q.nw->q.se, q.ne->q.sw, q.sw->q.ne, q.se->q.nw).result(space, level-1);
+            return get_cell(space, *q.nw->q.se, *q.ne->q.sw, *q.sw->q.ne, *q.se->q.nw).result(space, level);
         }
         // Evaluates the pseudo-quadrant that straddles the two given quadrants
         // horizontally.
         friend cell_ref result_horizontal(cellspace& space, int level, cell_ref w, cell_ref e) {
-            return cell::get_cell(space, w.q.ne, e.q.nw, w.q.se, e.q.sw).result(space, level-1);
+            return cell::get_cell(space, *w.q.ne, *e.q.nw, *w.q.se, *e.q.sw).result(space, level);
         }
         // Evaluates the pseudo-quadrant that straddles the two given quadrants
         // vertically.
         friend cell_ref result_vertical(cellspace& space, int level, cell_ref n, cell_ref s) {
-            return cell::get_cell(space, n.q.sw, n.q.se, s.q.nw, s.q.ne).result(space, level-1);
+            return cell::get_cell(space, *n.q.sw, *n.q.se, *s.q.nw, *s.q.ne).result(space, level);
         }
 
         // Chooses the right next generation 0-cell for a given cell state and
         // number of live neighbours.
-        static cell_ref future_leaf(int neighbours, bool alive) {
-            if(neighbours == 2 && alive) return live_leaf();
-            if(neighbours == 3) return live_leaf();
-            return dead_leaf();
+        static cell_ref future_leaf(cellspace& space, int neighbours, bool alive) {
+            if(neighbours == 2 && alive) return live(space);
+            if(neighbours == 3) return live(space);
+            return dead(space);
         }
 
         operator bool() const { return alive; }
 
-        // Ctors should only be used by cellspace to generate cells uniquely
-        // and as needed.
-        cell(bool status) : alive(status) {}
-        cell(cell_ref nw, cell_ref ne, cell_ref sw, cell_ref se)
-        : q{ &nw, &ne, &sw, &se, nullptr } {}
+        // This is an immovable brick as its identity somewhat relies on its
+        // address
+        cell(cell const&) = delete;
+        cell& operator=(cell const&) = delete;
+        ~cell() = default;
 
         // Definition of cell equivalent for use in a hash set.
         friend struct equivalence;
@@ -182,7 +186,7 @@ namespace hlife {
         , root([this]() -> cell_ref {
                 // 0-cells (leaves) are static locals from factories on `cell`
                 // they and don't live in the hash set as they cannot be hashed
-                auto leaf_of = [](bool b) -> cell_ref { return b? cell::live_leaf() : cell::dead_leaf(); };
+                auto leaf_of = [this](bool b) -> cell_ref { return b? live_cell() : dead_cell(); };
 
                 // pre-generate all 16 1-cells from bit patterns
                 for(int i = 0; i < 16; ++i)
@@ -199,10 +203,20 @@ namespace hlife {
                 return *empty;
             }()) {}
 
+        // The one live cell
+        cell_ref live_cell() const {
+            static cell_ref live = cell(cell::key(), true);
+            return live;
+        }
+        // The one dead cell
+        cell_ref dead_cell() const {
+            static cell_ref dead = cell(cell::key(), false);
+            return dead;
+        }
+
         // Obtains a cell with the given quadrants, creating it if necessary.
         cell_ref cell_with(cell_ref nw, cell_ref ne, cell_ref sw, cell_ref se) const {
-            cell c(nw, ne, sw, se);
-            return *cells.insert(c).first;
+            return *cells.emplace(cell::key(), nw, ne, sw, se).first;
         }
 
     private:
@@ -211,10 +225,11 @@ namespace hlife {
         cell_ref root;
     };
 
+    cell_ref cell::live(cellspace& space) { return space.live_cell(); }
+    cell_ref cell::dead(cellspace& space) { return space.dead_cell(); }
     cell_ref cell::get_cell(cellspace& space, cell_ref nw, cell_ref ne, cell_ref sw, cell_ref se) {
         return space.cell_with(nw, ne, sw, se);
     }
 }
 
 #endif // HLIFE_HPP
-
