@@ -62,7 +62,7 @@ namespace hlife {
             // Recursive evaluation bottoms out at 2-cells since 1-cells cannot
             // be evaluated.
             if(level == 2) {
-                // 2-cells are evaluted normally by counting live neighbours.
+                // 2-cells are evaluated normally by counting live neighbours.
                 int nnw = *q.nw->q.nw + *q.nw->q.ne + *q.ne->q.nw
                         + *q.nw->q.sw               + *q.ne->q.sw
                         + *q.sw->q.nw + *q.sw->q.ne + *q.se->q.nw;
@@ -165,9 +165,11 @@ namespace hlife {
             // The four cell quadrants.
             cell_ptr nw, ne, sw, se;
             // The cell obtained by evaluating the future of this cell.
-            // This is mutable because 
+            // This is mutable because it is evaluated lazily.
             mutable cell_ptr future;
         } q;
+        // No tagging is used to tell the two apart; all operations know which
+        // kind of cell they work on from context.
     };
 
     struct cellspace {
