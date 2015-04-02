@@ -17,6 +17,9 @@
 #include <array>
 #include <functional>
 #include <unordered_set>
+#include <tuple>
+#include <memory>
+#include <utility>
 #include <cstddef>
 #include <cassert>
 
@@ -28,22 +31,76 @@ namespace hlife {
     using cell_ptr = cell const*;
     using cell_ref = cell const&;
 
-    union cell {
-    private:
-        // Passkey for ctors
-        struct key {};
+    // A point in space-time.
+    struct point {
+        int x, y, t;
 
+        bool operator==(point const& other) { return tied() == other.tied(); }
+        bool operator!=(point const& other) { return tied() != other.tied(); }
+
+    private:
+        std::tuple<int const&, int const&, int const&> tied() const { return std::tie(x, y, t); }
+    };
+
+    union cell {
     public:
+        // Passkey for ctors
+        struct key {
+        private:
+            key() = default;
+            friend struct cellspace;
+        };
+
         // Except for the two leaves, ctors should only be used by cellspace to
         // generate cells uniquely and as needed. The passkey idiom is used to
-        // help that.
+        // enforce that.
         cell(key const&, bool status) : alive(status) {}
         cell(key const&, cell_ref nw, cell_ref ne, cell_ref sw, cell_ref se)
         : q{ &nw, &ne, &sw, &se, nullptr } {}
 
-    private:
-        friend struct cellspace;
+        // Tests if a point is in a cell's light cone The only properties of
+        // the cell that are needed are the extrinsic ones: its level (aka
+        // size), and the coordinates of its center. This could be a non-static
+        // member, and should probably be, but since it uses no intrinsic
+        // properties, we can avoid the unnecessary evaluation of some cells.
+        static bool in_light_cone(int level, point center, point p) {
+            // Leaves have a degenerate light cone, so the point has to be at
+            // the leaf's position to be in the cone.
+            if(level == 0) return center == p;
 
+            // If the point is in the past it's not in the light cone.
+            if(p.t < center.t) return false;
+
+            // We'll need the offsets of the quadrant centers soon...
+            int center_offset = 1 << (level-2);
+
+            // If the point is in the future and lies within this cell's future
+            // space (the central pseudo-quadrant), we search the future cell.
+            if(p.t > center.t
+               && p.x >= (center.x - offset)
+               && p.x <  (center.x + offset)
+               && p.y >= (center.y - offset)
+               && p.y <  (center.y + offset)) {
+                return in_light_cone(level-1, qcenter, p);
+            }
+
+            // Otherwise we need to search for the point in a specific quadrant
+            // The quadrant's center is at the same time, but at different
+            // spatial coordinates that differ from this cell's center by a
+            // quarter the side of this cell in both axes.
+            bool north = p.x < center.x;
+            bool west  = p.y < center.y;
+            point qcenter {
+                center.x + (west?  -1 : 1) * center_offset,
+                center.y + (north? -1 : 1) * center_offset,
+                center.t
+            };
+
+            // Recursively search the quadrant for this point
+            return in_light_cone(level-1, qcenter, p);
+        }
+
+    private:
         // Retrieves a matching cell from the cellspace.
         // This should be the only way to obtain macro-cells.
         // We simply assume that all cells exist in cellspace
@@ -176,53 +233,41 @@ namespace hlife {
         // kind of cell they work on from context.
     };
 
+    // A cellspace is the set of all possible cells.
     struct cellspace {
     public:
-        // Creates a square cellspace with sides 2^levels. This means there is a
-        // single levels-cell at the root.
-        cellspace(int levels)
-        : cells()
-        , level(levels)
-        , root([this]() -> cell_ref {
-                // 0-cells (leaves) are static locals from factories on `cell`
-                // they and don't live in the hash set as they cannot be hashed
-                auto leaf_of = [this](bool b) -> cell_ref { return b? live_cell() : dead_cell(); };
+        cellspace() {
+            // 0-cells and 1-cells cannot be generated through the recursive
+            // process, so they need to be pre-seeded.
 
-                // pre-generate all 16 1-cells from bit patterns
-                for(int i = 0; i < 16; ++i)
-                    cell_with(leaf_of(i&8), leaf_of(i&4), leaf_of(i&2), leaf_of(i&1));
+            // 0-cells (leaves) are static locals obtained from factories.
+            // They don't live in the hash set as they cannot be hashed.
+            auto leaf_of = [this](bool b) -> cell_ref { return b? live_cell() : dead_cell(); };
 
-                // pre-generate emptiness for all cells up to levels
-                cell_ptr empty = &leaf_of(false);
-                for(int n = 1; n < level; ++n) {
-                    // make an empty higher level cell with all four quadrants
-                    // consisting of the previous empty cell.
-                    empty = &cell_with(*empty, *empty, *empty, *empty);
-                }
-                // return the empty cell at the top
-                return *empty;
-            }()) {}
+            // Pre-generate all 16 1-cells from bit patterns 0-15.
+            for(int i = 0; i < 16; ++i)
+                cell_with(leaf_of(i&8), leaf_of(i&4), leaf_of(i&2), leaf_of(i&1));
+        }
 
-        // The one live cell
+        // The one live cell.
         cell_ref live_cell() const {
             static cell_ref live = cell(cell::key(), true);
             return live;
         }
-        // The one dead cell
+        // The one dead cell.
         cell_ref dead_cell() const {
             static cell_ref dead = cell(cell::key(), false);
             return dead;
         }
 
-        // Obtains a cell with the given quadrants, creating it if necessary.
+        // Obtains a cell with the given quadrants. Cells are created lazily
+        // when requested for the first time.
         cell_ref cell_with(cell_ref nw, cell_ref ne, cell_ref sw, cell_ref se) const {
             return *cells.emplace(cell::key(), nw, ne, sw, se).first;
         }
 
     private:
         mutable std::unordered_set<cell, cell::equivalence, cell::equivalence> cells;
-        int level;
-        cell_ref root;
     };
 
     cell_ref cell::live(cellspace& space) { return space.live_cell(); }
@@ -230,6 +275,34 @@ namespace hlife {
     cell_ref cell::get_cell(cellspace& space, cell_ref nw, cell_ref ne, cell_ref sw, cell_ref se) {
         return space.cell_with(nw, ne, sw, se);
     }
+
+    struct world {
+    public:
+        // Generates an empty square world with sides 2^level using the given cellspace.
+        world(std::shared_ptr<cellspace> space, int level)
+        : space(std::move(space))
+        , level(level)
+        , root([this]() -> cell_ref {
+                // pre-generate emptiness for all cells up to level
+                cell_ptr empty = &this->space->dead_cell();
+                for(int n = 1; n < this->level; ++n) {
+                    // make an empty higher level cell with all four quadrants
+                    // consisting of the previous level's empty cell.
+                    empty = &this->space->cell_with(*empty, *empty, *empty, *empty);
+                }
+                // return the empty cell at the top
+                return *empty;
+            }()) {}
+
+        // TODO growth
+        // TODO mutation
+        // TODO display
+
+    private:
+        std::shared_ptr<cellspace> space;
+        int level;
+        cell_ref root;
+    };
 }
 
 #endif // HLIFE_HPP

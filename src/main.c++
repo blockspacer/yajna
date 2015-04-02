@@ -4,6 +4,7 @@
 #include <hlife/hlife.h++>
 
 NONIUS_BENCHMARK("generate-16384", []{
-    hlife::cellspace L(16384);
-    L.root.result(L, 16383);
+    auto space = std::make_shared<hlife::cellspace>();
+    hlife::world w(space, 16384);
+    w.root.result(*space, 16383);
 })
